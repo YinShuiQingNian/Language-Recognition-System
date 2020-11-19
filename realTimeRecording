@@ -1,0 +1,178 @@
+# -*- coding: utf-8 -*-
+import wave
+import os
+import numpy as np
+from struct import unpack
+import pyaudio
+import pylab as plt
+import os
+#计算短时能量，设定一帧为256个采样点
+def shortTerm_energy(data):
+    energy=[]     #存放短时能量
+    energy_frame=0    #存放每帧的短时能量
+    for i in range(len(data)):             #遍历每一个采样点
+        energy_frame = energy_frame + int(data[i])*int(data[i])     #计算每帧的短时能量
+        if (i+1) % 256 == 0:                         #计算256个采样点的短时能量，设定为1帧的短时能量
+            energy.append(energy_frame)
+            energy_frame=0
+        elif i+1 == len(data):                       #最后一帧的短时能量
+            energy.append(energy_frame)
+    return energy
+
+#定义一个判别函数，若输入数据i大于等于0，则返回1；若输入数据i小于0，则返回0
+def sgn (i):
+    if i >= 0:
+        return 1
+    else:
+        return 0
+#计算短时过零率，设定一帧为256个采样点
+def shortTerm_zeroCrossingRate(data) :
+    zeroCrossingRate = []             #存放短时过零率
+    zeroCrossingRate_frame=0           #存放每帧的短时过零率
+    for i in range(len(data)) :           #遍历每一个采样点
+        if i % 256 == 0:
+            continue                      #每一帧起始的采样点不考虑与前一帧最后采样点的过零情况
+        zeroCrossingRate_frame = zeroCrossingRate_frame + np.abs(sgn(data[i]) - sgn(data[i-1]))     #统计每一帧内的过零次数
+        if (i + 1) % 256 == 0 :
+            zeroCrossingRate.append(float(zeroCrossingRate_frame) / 255)      #计算每一帧的短时过零率
+            zeroCrossingRate_frame = 0
+        elif i == len(data) - 1 :
+            zeroCrossingRate.append(float(zeroCrossingRate_frame) / 255)      #最后一帧的短时过零率
+    return zeroCrossingRate
+
+#双门限法端点检测
+def endPoint_detection(data):
+    energy=shortTerm_energy(data)                           #语音的短时能量
+    zeroCrossingRate=shortTerm_zeroCrossingRate(data)       #语音的短时过零率
+    firstStep_list=[]      #第一步检测得到的序列
+    secondStep_list=[]     #第二步检测得到的序列
+    thirdStep_list=[]      #第三步检测得到的序列
+    sum = 0
+    ave_energy = 0
+    for i in energy:
+        sum = sum + i
+    ave_energy = sum / len(energy)
+    sum = 0
+    for i in energy[:5]:
+        sum = sum + i
+    LE = sum / 5
+
+    HE= ave_energy/4             #高短时能量阈值
+    LE=  (LE+HE) /4               #低短时能量阈值
+    sum = 0
+    for zcr in zeroCrossingRate[:5]:
+        sum = float(sum) + zcr
+    ZCR=sum/5                   #短时过零率阈值
+
+# 进行第一步检测，利用高短时能量阈值
+    flag = 0
+    for i in range(len(energy)):          #遍历每一帧
+        if flag == 0 and energy[i] > HE and len(firstStep_list) == 0 :
+            firstStep_list.append(i)                #大于HE且flag=0,说明是语音段的开始，加入序列
+            flag = 1
+        elif flag == 0 and energy[i] > HE and i -  firstStep_list[-1]  > 21:
+            firstStep_list.append(i)                #大于HE且flag=0,且与前一段有一定距离，说明是一段新的语音段的开始，加入序列
+            flag = 1
+        elif flag == 0 and energy[i] > HE and i -  firstStep_list[-1]  <= 21:
+            firstStep_list = firstStep_list[:len(firstStep_list) - 1]         #大于HE且flag=0,,但与前一段距离过近，将两段合并为一段。
+            flag = 1
+
+        if flag == 1 and energy[i] < HE :
+            firstStep_list.append(i)               #小于HE,且flag=1,说明是语音段的结尾，加入序列
+            flag = 0
+#进行第二步检测，利用低短时能量阈值
+#在第一步检测的基础上，对其序列进行两端扩展
+    for j in range(len(firstStep_list)):
+        i = firstStep_list[j]
+        if j % 2 == 0:
+            while energy[i] > LE and i>0:
+                i = i - 1
+            secondStep_list.append(i)                #在语音段左端扩展其大于LE的部分
+
+        else:
+            while energy[i] > LE and i < len(energy):
+                i = i + 1
+            secondStep_list.append(i)                #在语音段右端扩展其大于LE的部分
+
+#进行第三步检测，利用短时过零率阈值
+#在第二步检测的基础上，对其序列进行两端扩展
+    for j in range(len(secondStep_list)):
+        i = secondStep_list[j]
+        if j % 2 == 0:
+            while zeroCrossingRate[i] > 3*ZCR and i>0:
+                i = i - 1
+            thirdStep_list.append(i)                #在语音段左端扩展其大于ZCR的部分
+
+        else:
+            while zeroCrossingRate[i] > 3*ZCR and i < len(zeroCrossingRate):
+                i = i + 1
+            thirdStep_list.append(i)                #在语音段右端扩展其大于ZCR的部分
+
+    return thirdStep_list
+
+#将语音文件转化为wav格式的文件，以便得到端点检测后的wav格式的文件
+def dataToWav(filename,data):
+    wf = wave.open(filename, 'wb')
+    wf.setnchannels(1)  # 设置为单声道
+    wf.setsampwidth(2)  # 采样字节 为 2字节
+    wf.setframerate(16000)  # 设定采样频率 16000
+    wf.writeframes(b"".join(data))
+    wf.close()
+
+
+
+
+
+
+# 录音
+p = pyaudio.PyAudio()
+stream = p.open(format=pyaudio.paInt16, channels=1,  #单声道
+                 rate=16000, input=True,     #rate是采样频率
+                 frames_per_buffer=1024)       #录音的块大小
+print("正在录音，请开始说话：")
+wave_data= []
+for i in range(0, int(16000 / 1024 * 5)):      #录音时长为5秒
+    data = stream.read(1024)
+    wave_data.append(data)
+
+print("录音已经结束。")
+stream.stop_stream()
+stream.close()
+p.terminate()
+# 将刚录音的文件存储为wav格式
+dataToWav("./record/recording.wav", wave_data)
+
+# 读取刚录制的wav格式文件
+f = wave.open("./record/recording.wav", "rb")
+params = f.getparams()
+nchannels, sampwidth, framerate, nframes = params[:4]
+str_data = f.readframes(nframes)
+data = np.frombuffer(str_data, dtype=np.short)
+f.close()
+temp_data=data
+data.shape = -1, 1
+data = data.T
+time = np.arange(0, nframes) * (1.0 / framerate)
+# 绘制波形
+plt.subplot(211)
+plt.plot(time, data[0])
+plt.xlabel("time (seconds)")
+plt.show()
+list=endPoint_detection(temp_data)
+m=0
+while(m < len(list)):
+    dataToWav("./record/endPointRecording.wav", temp_data[list[m] * 256: list[m + 1] * 256])
+    m=m+2
+
+#读取端点检测后的录制的wav文件
+f = wave.open("./record/endPointRecording.wav", "rb")
+params = f.getparams()
+nchannels, sampwidth, framerate, nframes = params[:4]
+str_data = f.readframes(nframes)
+data = np.frombuffer(str_data, dtype=np.short)
+f.close()
+time = np.arange(0, nframes) * (1.0 / framerate)
+# 绘制波形
+plt.plot(time, data)
+plt.xlabel("time (seconds)")
+plt.show()
